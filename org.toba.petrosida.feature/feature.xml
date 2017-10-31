@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feature
+      id="org.toba.petrosida.feature"
+      label="Feature"
+      version="1.0.0.qualifier"
+      plugin="org.toba.petrosida">
+
+   <description url="http://www.example.com/description">
+      [Enter Feature Description here.]
+   </description>
+
+   <copyright url="http://www.example.com/copyright">
+      [Enter Copyright Description here.]
+   </copyright>
+
+   <license url="http://www.example.com/license">
+      [Enter License Description here.]
+   </license>
+
+   <requires>
+      <import plugin="org.eclipse.osgi.services" version="3.4.0" match="greaterOrEqual"/>
+      <import plugin="org.adempiere.ui.zk" version="3.1.0" match="greaterOrEqual"/>
+      <import plugin="org.adempiere.plugin.utils" version="3.1.0" match="greaterOrEqual"/>
+      <import plugin="org.eclipse.osgi"/>
+      <import plugin="org.adempiere.base" version="3.1.0" match="greaterOrEqual"/>
+      <import plugin="org.adempiere.ui" version="3.1.0" match="greaterOrEqual"/>
+      <import plugin="org.idempiere.webservices"/>
+      <import plugin="org.taowi.hcm.core"/>
+   </requires>
+
+   <plugin
+         id="org.toba.petrosida"
+         download-size="0"
+         install-size="0"
+         version="1.0.0.qualifier"
+         unpack="false"/>
+
+</feature>
