@@ -19,9 +19,9 @@ import org.compiere.process.ProcessInfoParameter;
 import org.compiere.process.SvrProcess;
 import org.compiere.util.DB;
 import org.compiere.util.Env;
+import org.taowi.hcm.core.model.MEmployee;
 import org.taowi.hcm.core.model.MEmployeeJob;
 import org.taowi.hcm.core.model.MJob;
-import org.taowi.hcm.core.model.X_HC_EmployeeJob;
 import org.taowi.hcm.imported.classes.TimeUtil;
 import org.toba.psd.model.X_HC_AccomodationPoint;
 import org.toba.psd.model.X_HC_HistoryTravel;
@@ -62,57 +62,149 @@ public class PSD_ApprovalTravelProcessNow extends SvrProcess{
 		
 		if(p_HC_TravelRequest_ID <= 0)
 			throw new AdempiereException("Error: Requested Travel is not selected");
+		
 		X_HC_TravelRequest travelRequest = new X_HC_TravelRequest(getCtx(), p_HC_TravelRequest_ID, get_TrxName());
-		BigDecimal totalExpense = new BigDecimal(0);
-		//calculateTransportPointExpense
-		totalExpense = totalExpense.add(calculateTransportPointExpense(travelRequest));
-		//calculate AccomodationExpense
-		totalExpense = totalExpense.add(calculateAccomodationExpense(travelRequest));
-		//calculate OtherPointExpense
-		totalExpense = totalExpense.add(calculateOtherPointExpense(travelRequest));
-		
-		totalExpense = totalExpense.add(new BigDecimal(travelRequest
-				.get_Value(X_HC_TravelRequest.COLUMNNAME_TotalDailyExpense)
-				.toString()));
-		
-		travelRequest.set_ValueOfColumn(X_HC_TravelRequest.COLUMNNAME_TotalExpense, totalExpense);
-		travelRequest.set_ValueOfColumn(X_HC_TravelRequest.COLUMNNAME_HC_ApprovedPrePayment, totalExpense);
-		travelRequest.saveEx();
-		//check if user is manager or sdm
+		//CalculateExpense
+		calculateExpense(travelRequest);
+
 		int m_user_id = Env.getAD_User_ID(getCtx());
 		int m_role_id = 0;
+		String sql="";
 		boolean isSDM = false;
-		String roleApproveTravel = "Approve Travel";//SDM
+		
 		X_AD_User user = new X_AD_User(getCtx(), m_user_id, get_TrxName());
 		
-		String sql = "SELECT "+X_AD_Role.COLUMNNAME_AD_Role_ID+" FROM "+X_AD_Role.Table_Name+" WHERE "
-				+ X_AD_Role.COLUMNNAME_IsActive + "='Y' AND "
-				+ X_AD_Role.COLUMNNAME_Name + " LIKE ?";
-		PreparedStatement pstmt = null;
-		ResultSet rs = null;
-		try{
-			pstmt = DB.prepareStatement (sql, get_TrxName());
-			pstmt.setString(1, roleApproveTravel);
-			rs = pstmt.executeQuery();
-			if(rs.next()){
-				m_role_id = rs.getInt(1);
+		m_role_id = getRoleId();
+		isSDM = checkSDM(m_role_id, m_user_id);
+		int m_employee_id = user.get_ValueAsInt("HC_Employee_ID");// get from user login (user must have HC_Employee_ID not empty)
+		
+		if(m_employee_id <= 0 && isSDM == false)
+			throw new AdempiereException("Error: Your account is not identified as an employee ");
+		
+		if(travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_Rejected))
+			throw new AdempiereException("Error: Already rejected");
+		
+		if(isSDM == true)//user with role sdm
+		{	
+			if(!travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_ApprovedByDireksi) 
+					&& !travelRequest.get_ValueAsBoolean("IsComplete"))
+				throw new AdempiereException("Error: Direksi hasn't approved this document yet");// document must approved by direksi first then sdm can confirm
+			
+			if(p_Status.equals("Acc"))
+			{
+				travelRequest.setStatus(X_HC_TravelRequest.STATUS_ApprovedBySDM);//aproved for sdm
+				if(travelRequest.getNomorSPPD().length() <= 0)
+					throw new AdempiereException("Error: Nomor SPPD needed");
 			}
-		}
-		catch (SQLException e){
-			log.log(Level.SEVERE, "Not found role sdm", e);
-		}
-		finally{
-			DB.close(rs, pstmt);
-			rs = null;
-			pstmt = null;
-		}
+			else
+				travelRequest.setStatus(X_HC_TravelRequest.STATUS_Rejected);
+			
+			travelRequest.saveEx();
+			MakeHistoryTravel(travelRequest, m_employee_id,isSDM);
+			GeneratePJKRequestTravel(travelRequest);
+		}else{
+			if(m_employee_id != travelRequest.getHC_Manager_ID())
+				throw new AdempiereException("Error: you doesn't have access to approve this yet");
+			
+			//get HC_EmployeeJob manager with seq 1 ,and active
+			MEmployee m_employee = new MEmployee(getCtx(), m_employee_id, get_TrxName());
+			int HC_EmployeeJob_ID = m_employee.getActiveSequenceOneEmployeeJob();
+			
+			//if employeejob not exists, then return error
+			if(HC_EmployeeJob_ID <= 0)
+				throw new AdempiereException("Error: manager doesn't have Sequence 1 Employee Job");
+			
+			MEmployeeJob employeeJob = new MEmployeeJob(getCtx(), HC_EmployeeJob_ID, get_TrxName());
+			MJob job = new MJob(getCtx(), employeeJob.getHC_Job_ID(), get_TrxName());
+			X_HC_JobLevel jobLevel = new X_HC_JobLevel(getCtx(), job.getHC_JobLevel_ID(), get_TrxName());
 		
+			if(m_employee_id == travelRequest.getHC_Manager_ID() 
+					&& travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_Requested)){
+				if(!jobLevel.getValue().equals(Direksi)){//user for manager
+					if(!travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_Requested))//if status already approved sdm/direksi 
+						throw new AdempiereException("Error: already processed");
+					else
+					{
+						if(p_Status.equals("Acc")){
+							//select direksi
+							String check = jobLevel.getValue();
+							while(!Direksi.equals(check)){
+								int hc_jobReportTo_id = job.getHC_JobReportTo_ID();
+								if(hc_jobReportTo_id > 0)
+								{
+									MJob newManagerJob = new MJob(getCtx(), hc_jobReportTo_id, get_TrxName());
+									int newManagerjobLevel_ID = newManagerJob.getHC_JobLevel_ID();
+									X_HC_JobLevel newManagerJobLevel = new X_HC_JobLevel(getCtx(), newManagerjobLevel_ID, get_TrxName());
+									check = newManagerJobLevel.getValue();
+									if(newManagerJobLevel.getValue().equals(Direksi)){
+										sql = "SELECT "+MEmployeeJob.COLUMNNAME_HC_Employee_ID +" FROM "
+												+ MEmployeeJob.Table_Name +" WHERE "
+												+ MEmployeeJob.COLUMNNAME_HC_Job_ID+"= ? AND "
+												+ MEmployeeJob.COLUMNNAME_SeqNo+"= 1 AND "
+												+ MEmployeeJob.COLUMNNAME_HC_Status+"='"+MEmployeeJob.HC_STATUS_Active+"' AND "
+												+ MEmployeeJob.COLUMNNAME_IsActive+"='Y'";
+										int HC_Direksi_ID =  DB.getSQLValue(get_TrxName(), sql, newManagerJob.getHC_Job_ID());
+										if(HC_Direksi_ID <= 0)
+											throw new AdempiereException("Error: not found employee with job direksi "+ newManagerJob.getValue());
+										travelRequest.setHC_Manager_ID(HC_Direksi_ID);
+									}else
+										job = newManagerJob;
+								}
+							}
+							//end select direksi id
+							
+							travelRequest.setStatus(X_HC_TravelRequest.STATUS_ApprovedByManager);
+							MakeHistoryTravel(travelRequest, m_employee_id, isSDM);
+						}else{
+							travelRequest.setStatus(X_HC_TravelRequest.STATUS_Rejected);
+						}
+					}
+			
+				}else if(jobLevel.getValue().equals(Direksi)){
+					if(!travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_Requested))
+						throw new AdempiereException("Error: already processed");//if status already approved sdm/direksi
+					else
+						if(p_Status.equals("Acc"))
+						{
+							travelRequest.setStatus(X_HC_TravelRequest.STATUS_ApprovedByDireksi);
+							travelRequest.set_ValueOfColumn("IsComplete", true);
+							MakeHistoryTravel(travelRequest, m_employee_id, isSDM);
+						}
+						else
+						{
+							travelRequest.setStatus(X_HC_TravelRequest.STATUS_Rejected);
+						}
+				}
+			}else if(jobLevel.getValue().equals(Direksi)){
+				if(travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_Requested))
+					throw new AdempiereException("Error: still waiting approval from manager");
+				else if(travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_ApprovedByDireksi))
+					throw new AdempiereException("Error: already approved by you");
+				else
+					if(p_Status.equals("Acc")){
+						travelRequest.setStatus(X_HC_TravelRequest.STATUS_ApprovedByDireksi);
+						travelRequest.set_ValueOfColumn("IsComplete", true);
+						MakeHistoryTravel(travelRequest, m_employee_id, isSDM);
+					}else
+						travelRequest.setStatus(X_HC_TravelRequest.STATUS_Rejected);
+			}
+			
+		}
+		travelRequest.saveEx();
 		
-		sql = "SELECT "+X_AD_User_Roles.COLUMNNAME_AD_User_ID+" FROM "+X_AD_User_Roles.Table_Name+" WHERE "
+		if(p_Status.equals("Acc"))
+			return "Success Process Accept travel ";
+		else
+			return "Success Process Reject travel";
+	}//doIt
+	
+	public boolean checkSDM(int m_role_id,int m_user_id){
+		boolean isSDM = false;
+		String sql = "SELECT "+X_AD_User_Roles.COLUMNNAME_AD_User_ID+" FROM "+X_AD_User_Roles.Table_Name+" WHERE "
 				+ X_AD_User_Roles.COLUMNNAME_AD_Role_ID+"=? AND "
 				+ X_AD_User_Roles.COLUMNNAME_AD_User_ID+"=?";
-		pstmt = null;
-		 rs = null;
+		PreparedStatement pstmt = null;
+		ResultSet rs = null;
 		try{
 			pstmt = DB.prepareStatement (sql, get_TrxName());
 			pstmt.setInt(1, m_role_id);
@@ -130,65 +222,81 @@ public class PSD_ApprovalTravelProcessNow extends SvrProcess{
 			rs = null;
 			pstmt = null;
 		}
-		int m_employee_id = user.get_ValueAsInt("HC_Employee_ID");
 		
-		if(m_employee_id <= 0){
-			throw new AdempiereException("Error: Your user isn't an employee ");
+		return isSDM;
+	}
+	
+	/**
+	 * get Role ID Confirm SDM
+	 * @return
+	 */
+	public int getRoleId(){
+		//roleApproveTravel
+
+		String roleConfirmSDM = "Confirm SDM";//SDM
+		int m_role_id = 0;
+		
+		String sql = "SELECT "+X_AD_Role.COLUMNNAME_AD_Role_ID+" FROM "+X_AD_Role.Table_Name+" WHERE "
+				+ X_AD_Role.COLUMNNAME_IsActive + "='Y' AND "
+				+ X_AD_Role.COLUMNNAME_Name + " LIKE ?";
+		PreparedStatement pstmt = null;
+		ResultSet rs = null;
+		try{
+			pstmt = DB.prepareStatement (sql, get_TrxName());
+			pstmt.setString(1, roleConfirmSDM);
+			rs = pstmt.executeQuery();
+			if(rs.next()){
+				m_role_id = rs.getInt(1);
+			}
+		}
+		catch (SQLException e){
+			log.log(Level.SEVERE, "Not found role sdm", e);
+		}
+		finally{
+			DB.close(rs, pstmt);
+			rs = null;
+			pstmt = null;
 		}
 		
-		if(travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_Rejected)){
-			throw new AdempiereException("Error: Already rejected");
-		}
+		return m_role_id;
+	}
+	
+	/**
+	 * Calculate total expense and approved prepayment
+	 * @param travelRequest
+	 */
+	public void calculateExpense(X_HC_TravelRequest travelRequest){
+		BigDecimal totalExpense = new BigDecimal(0);
+		//calculateTransportPointExpense
+		totalExpense = totalExpense.add(calculateTransportPointExpense(travelRequest));
+		//calculate AccomodationExpense
+		totalExpense = totalExpense.add(calculateAccomodationExpense(travelRequest));
+		//calculate OtherPointExpense
+		totalExpense = totalExpense.add(calculateOtherPointExpense(travelRequest));
 		
-		if(isSDM == true){
-			//sdm
-			
-			if(!travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_ApprovedByDireksi) && !travelRequest.get_ValueAsBoolean("IsComplete")){
-				throw new AdempiereException("Error: Direksi hasn't approved this document yet");
-			}
-			
-			if(p_Status.equals("Acc")){
-				travelRequest.setStatus(X_HC_TravelRequest.STATUS_ApprovedBySDM);
-				if(travelRequest.getNomorSPPD().length() <= 0){
-					throw new AdempiereException("Error: Nomor SPPD needed");
-				}
-			}else{
-				travelRequest.setStatus(X_HC_TravelRequest.STATUS_Rejected);
-			}
-			
-			travelRequest.saveEx();
-			MakeHistoryTravel(travelRequest, m_employee_id);
-			GeneratePJKRequestTravel(travelRequest);
-		}else{
-			if(m_employee_id != travelRequest.getHC_Manager_ID()){
-				throw new AdempiereException("Error: you doesn't have access to approve this yet");
-			}
-			
-			//get HC_EmployeeJob manager with seq 1 ,and active
-			sql = "SELECT "+MEmployeeJob.COLUMNNAME_HC_EmployeeJob_ID +" FROM "
+		totalExpense = totalExpense.add(new BigDecimal(travelRequest
+				.get_Value(X_HC_TravelRequest.COLUMNNAME_TotalDailyExpense)
+				.toString()));
+		
+		travelRequest.set_ValueOfColumn(X_HC_TravelRequest.COLUMNNAME_TotalExpense, totalExpense);
+		travelRequest.set_ValueOfColumn(X_HC_TravelRequest.COLUMNNAME_HC_ApprovedPrePayment, totalExpense);
+		travelRequest.saveEx();
+	}
+	
+	/**
+	 * Make history travel
+	 * @param travelRequest
+	 */
+	private void MakeHistoryTravel(X_HC_TravelRequest travelRequest, int manager_ID, boolean IsSDM){
+		
+		if(!IsSDM){
+			//get HC_EmployeeJob with seq 1 ,and active
+			String sql = "SELECT "+MEmployeeJob.COLUMNNAME_HC_EmployeeJob_ID +" FROM "
 					+ MEmployeeJob.Table_Name +" WHERE "
 					+ MEmployeeJob.COLUMNNAME_HC_Employee_ID+"= ? AND "
 					+ MEmployeeJob.COLUMNNAME_SeqNo+"= 1 AND "
 					+ MEmployeeJob.COLUMNNAME_HC_Status+"='"+MEmployeeJob.HC_STATUS_Active+"'";
-			int HC_EmployeeJob_ID = 0;
-			pstmt = null;
-			 rs = null;
-			try{
-				pstmt = DB.prepareStatement (sql, get_TrxName());
-				pstmt.setInt(1, m_employee_id);
-				rs = pstmt.executeQuery();
-				if(rs.next()){
-					HC_EmployeeJob_ID = rs.getInt(1);
-				}
-			}
-			catch (SQLException e){
-				log.log(Level.SEVERE, "Not found user role", e);
-			}
-			finally{
-				DB.close(rs, pstmt);
-				rs = null;
-				pstmt = null;
-			}
+			int HC_EmployeeJob_ID = DB.getSQLValue(get_TrxName(), sql, manager_ID);
 			
 			//if employeejob not exists, then return error
 			if(HC_EmployeeJob_ID <= 0) {
@@ -197,144 +305,25 @@ public class PSD_ApprovalTravelProcessNow extends SvrProcess{
 			
 			MEmployeeJob employeeJob = new MEmployeeJob(getCtx(), HC_EmployeeJob_ID, get_TrxName());
 			MJob job = new MJob(getCtx(), employeeJob.getHC_Job_ID(), get_TrxName());
-			int jobLevel_id = job.getHC_JobLevel_ID();
-			X_HC_JobLevel jobLevel = new X_HC_JobLevel(getCtx(), jobLevel_id, get_TrxName());
-		
-			if(m_employee_id == travelRequest.getHC_Manager_ID() 
-					&& travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_Requested)){
-				if(!jobLevel.getValue().equals(Direksi)){
-					if(!travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_Requested)){
-						//apabila status udah sampai approved sdm/direksi
-						throw new AdempiereException("Error: already processed");
-					}else{
-	
-						if(p_Status.equals("Acc")){
-							travelRequest.setStatus(X_HC_TravelRequest.STATUS_ApprovedByManager);
-							MakeHistoryTravel(travelRequest, m_employee_id);
-						}else{
-							travelRequest.setStatus(X_HC_TravelRequest.STATUS_Rejected);
-						}
-					}
-					
-					//select direksi
-					//get HC_EmployeeJob manager with seq 1 ,and active
-					sql = "SELECT "+MEmployeeJob.COLUMNNAME_HC_EmployeeJob_ID +" FROM "
-							+ MEmployeeJob.Table_Name +" WHERE "
-							+ MEmployeeJob.COLUMNNAME_HC_Employee_ID+"= ? AND "
-							+ MEmployeeJob.COLUMNNAME_SeqNo+"= 1 AND "
-							+ MEmployeeJob.COLUMNNAME_HC_Status+"='"+MEmployeeJob.HC_STATUS_Active+"'";
-					int empJobManager_ID = DB.getSQLValue(get_TrxName(), sql, m_employee_id);
-					
-					//if employeejob not exists, then return error
-					if(empJobManager_ID <= 0) {
-						throw new AdempiereException("Error: manager doesn't have Sequence 1 Employee Job");
-					}
-					X_HC_EmployeeJob empJobManager = new X_HC_EmployeeJob(getCtx(), empJobManager_ID, get_TrxName());
-					MJob Jobmanager = new MJob(getCtx(), empJobManager.getHC_Job_ID(), get_TrxName());
-					X_HC_JobLevel jobLevelManager = new X_HC_JobLevel(getCtx(), Jobmanager.getHC_JobLevel_ID(), get_TrxName());
-					String check = jobLevelManager.getValue();
-					while(!Direksi.equals(check)){
-						sql = "SELECT "+MEmployeeJob.COLUMNNAME_HC_Job_ID +" FROM "
-								+ MEmployeeJob.Table_Name +" WHERE "
-								+ MEmployeeJob.COLUMNNAME_HC_Job_ID+"= ? AND "
-								+ MEmployeeJob.COLUMNNAME_SeqNo+"= 1 AND "
-								+ MEmployeeJob.COLUMNNAME_HC_Status+"='"+MEmployeeJob.HC_STATUS_Active+"' AND "
-								+ MEmployeeJob.COLUMNNAME_IsActive+"='Y'";
-						int hc_jobReportTo_id = DB.getSQLValue(get_TrxName(), sql, Jobmanager.getHC_JobReportTo_ID());
-						if(hc_jobReportTo_id > 0){
-							MJob newManagerJob = new MJob(getCtx(), hc_jobReportTo_id, get_TrxName());
-							int newManagerjobLevel_ID = newManagerJob.getHC_JobLevel_ID();
-							X_HC_JobLevel newManagerJobLevel = new X_HC_JobLevel(getCtx(), newManagerjobLevel_ID, get_TrxName());
-							check = newManagerJobLevel.getValue();
-							if(newManagerJobLevel.getValue().equals(Direksi)){
-								sql = "SELECT "+MEmployeeJob.COLUMNNAME_HC_Employee_ID +" FROM "
-										+ MEmployeeJob.Table_Name +" WHERE "
-										+ MEmployeeJob.COLUMNNAME_HC_Job_ID+"= ? AND "
-										+ MEmployeeJob.COLUMNNAME_SeqNo+"= 1 AND "
-										+ MEmployeeJob.COLUMNNAME_HC_Status+"='"+MEmployeeJob.HC_STATUS_Active+"' AND "
-										+ MEmployeeJob.COLUMNNAME_IsActive+"='Y'";
-								int HC_Direksi_ID = DB.getSQLValue(get_TrxName(), sql, newManagerJob.getHC_Job_ID());
-								travelRequest.setHC_Manager_ID(HC_Direksi_ID);
-							}else{
-								Jobmanager = newManagerJob;
-							}
-						}
-					}
-					//end select direksi id
-				}else if(jobLevel.getValue().equals(Direksi)){
-					if(!travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_Requested)){
-						//apabila status udah sampai approved sdm/direksi
-						throw new AdempiereException("Error: already processed");
-					}else{
-	
-						if(p_Status.equals("Acc")){
-							travelRequest.setStatus(X_HC_TravelRequest.STATUS_ApprovedByDireksi);
-							travelRequest.set_ValueOfColumn("IsComplete", true);
-							MakeHistoryTravel(travelRequest, m_employee_id);
-						}else{
-							travelRequest.setStatus(X_HC_TravelRequest.STATUS_Rejected);
-						}
-					}
-				}
-			}else if(jobLevel.getValue().equals(Direksi)){
-				if(travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_Requested)){
-					//apabila status udah sampai approved sdm/direksi
-					throw new AdempiereException("Error: still waiting approval from manager");
-				}else if(travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_ApprovedByDireksi)){
-					throw new AdempiereException("Error: already approved by you");
-				}else if(travelRequest.getStatus().equals(X_HC_TravelRequest.STATUS_ApprovedByManager)){
-					throw new AdempiereException("Error: already processed");
-				}else{
-					if(p_Status.equals("Acc")){
-						travelRequest.setStatus(X_HC_TravelRequest.STATUS_ApprovedByDireksi);
-						MakeHistoryTravel(travelRequest, m_employee_id);
-						travelRequest.set_ValueOfColumn("IsComplete", true);
-					}else{
-						travelRequest.setStatus(X_HC_TravelRequest.STATUS_Rejected);
-					}
-				}
-			}
+			
+			X_HC_HistoryTravel historyTravel = new X_HC_HistoryTravel(getCtx(), 0, get_TrxName());
+			historyTravel.setHC_Employee_ID(travelRequest.getHC_Employee_ID());
+			historyTravel.setHC_TravelRequest_ID(travelRequest.get_ID());
+			historyTravel.setStatus(travelRequest.getStatus());
+			historyTravel.setHC_Manager_ID(manager_ID);
+			historyTravel.setAD_Org_ID(travelRequest.getAD_Org_ID());
+			historyTravel.setHC_JobLevel_ID(job.getHC_JobLevel_ID());
+			historyTravel.setIsActive(true);
+			historyTravel.saveEx();
+		}else{
+			X_HC_HistoryTravel historyTravel = new X_HC_HistoryTravel(getCtx(), 0, get_TrxName());
+			historyTravel.setHC_TravelRequest_ID(travelRequest.get_ID());
+			historyTravel.setStatus(travelRequest.getStatus());
+			historyTravel.setAD_Org_ID(travelRequest.getAD_Org_ID());
+			historyTravel.setIsActive(true);
+			historyTravel.setHC_Employee_ID(travelRequest.getHC_Employee_ID());
+			historyTravel.saveEx();
 		}
-		travelRequest.saveEx();
-		
-		if(p_Status.equals("Acc")){
-			return "Success Process Accept travel ";
-		}
-		else
-			return "Success Process Reject travel";
-	}//doIt
-	
-	/**
-	 * Make history travel
-	 * @param travelRequest
-	 */
-	private void MakeHistoryTravel(X_HC_TravelRequest travelRequest, int manager_ID){
-		
-		//get HC_EmployeeJob with seq 1 ,and active
-		String sql = "SELECT "+MEmployeeJob.COLUMNNAME_HC_EmployeeJob_ID +" FROM "
-				+ MEmployeeJob.Table_Name +" WHERE "
-				+ MEmployeeJob.COLUMNNAME_HC_Employee_ID+"= ? AND "
-				+ MEmployeeJob.COLUMNNAME_SeqNo+"= 1 AND "
-				+ MEmployeeJob.COLUMNNAME_HC_Status+"='"+MEmployeeJob.HC_STATUS_Active+"'";
-		int HC_EmployeeJob_ID = DB.getSQLValue(get_TrxName(), sql, manager_ID);
-		
-		//if employeejob not exists, then return error
-		if(HC_EmployeeJob_ID <= 0) {
-			throw new AdempiereException("Error: manager doesn't have Sequence 1 Employee Job");
-		}
-		
-		MEmployeeJob employeeJob = new MEmployeeJob(getCtx(), HC_EmployeeJob_ID, get_TrxName());
-		MJob job = new MJob(getCtx(), employeeJob.getHC_Job_ID(), get_TrxName());
-		
-		X_HC_HistoryTravel historyTravel = new X_HC_HistoryTravel(getCtx(), 0, get_TrxName());
-		historyTravel.setHC_Employee_ID(travelRequest.getHC_Employee_ID());
-		historyTravel.setHC_TravelRequest_ID(travelRequest.get_ID());
-		historyTravel.setStatus(travelRequest.getStatus());
-		historyTravel.setHC_Manager_ID(manager_ID);
-		historyTravel.setAD_Org_ID(travelRequest.getAD_Org_ID());
-		historyTravel.setHC_JobLevel_ID(job.getHC_JobLevel_ID());
-		historyTravel.setIsActive(true);
-		historyTravel.saveEx();
 	}//makeHistoryTravel
 	
 	/**

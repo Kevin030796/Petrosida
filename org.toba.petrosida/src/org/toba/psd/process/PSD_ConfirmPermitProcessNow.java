@@ -58,7 +58,69 @@ public class PSD_ConfirmPermitProcessNow extends SvrProcess{
 		X_AD_User user = new X_AD_User(getCtx(), ad_User_Id, get_TrxName());
 		int m_role_id = 0;
 		boolean isSDM = false;
-		String roleConfirmSDM = "Confirm SDM";//SDM role
+		
+		m_role_id = getRoleId();
+		isSDM = checkSDM(m_role_id,ad_User_Id);
+		
+		int m_employee_id = user.get_ValueAsInt("HC_Employee_ID");
+		
+		if(m_employee_id <= 0 && isSDM == false){
+			throw new AdempiereException("Error: Your account isn't identified as an employee ");
+		}
+		
+		if(isSDM == true)//sdm
+			if(!permit.getPermitType().equals("ITMK"))
+				throw new AdempiereException("Error: Document type is not for SDM to confirm");
+		else//satpam
+			if(permit.getPermitType().equals("ITMK"))
+				throw new AdempiereException("Error: Document type is not for satpam to confirm");
+		
+		double potonganUpah = 0.0;
+		potonganUpah = permit.CalculatePayDeduction();
+		permit.set_ValueOfColumn("NilaiPotonganUpah", new BigDecimal(potonganUpah));
+		permit.setStatus(p_StatusConfirm);
+		permit.saveEx();
+		
+		return "Success confirm";
+	}//doIt
+	
+	public boolean checkSDM(int m_role_id,int m_user_id){
+		boolean isSDM = false;
+		String sql = "SELECT "+X_AD_User_Roles.COLUMNNAME_AD_User_ID+" FROM "+X_AD_User_Roles.Table_Name+" WHERE "
+				+ X_AD_User_Roles.COLUMNNAME_AD_Role_ID+"=? AND "
+				+ X_AD_User_Roles.COLUMNNAME_AD_User_ID+"=?";
+		PreparedStatement pstmt = null;
+		ResultSet rs = null;
+		try{
+			pstmt = DB.prepareStatement (sql, get_TrxName());
+			pstmt.setInt(1, m_role_id);
+			pstmt.setInt(2, m_user_id);
+			rs = pstmt.executeQuery();
+			if(rs.next()){
+				isSDM = true;
+			}
+		}
+		catch (SQLException e){
+			log.log(Level.SEVERE, "Not found user role", e);
+		}
+		finally{
+			DB.close(rs, pstmt);
+			rs = null;
+			pstmt = null;
+		}
+		
+		return isSDM;
+	}//checkSDM()
+	
+	/**
+	 * get Role ID Confirm SDM
+	 * @return
+	 */
+	public int getRoleId(){
+		//roleApproveTravel
+
+		String roleConfirmSDM = "Confirm SDM";//SDM
+		int m_role_id = 0;
 		
 		String sql = "SELECT "+X_AD_Role.COLUMNNAME_AD_Role_ID+" FROM "+X_AD_Role.Table_Name+" WHERE "
 				+ X_AD_Role.COLUMNNAME_IsActive + "='Y' AND "
@@ -82,54 +144,7 @@ public class PSD_ConfirmPermitProcessNow extends SvrProcess{
 			pstmt = null;
 		}
 		
-		
-		sql = "SELECT "+X_AD_User_Roles.COLUMNNAME_AD_User_ID+" FROM "+X_AD_User_Roles.Table_Name+" WHERE "
-				+ X_AD_User_Roles.COLUMNNAME_AD_Role_ID+"=? AND "
-				+ X_AD_User_Roles.COLUMNNAME_AD_User_ID+"=?";
-		pstmt = null;
-		rs = null;
-		try{
-			pstmt = DB.prepareStatement (sql, get_TrxName());
-			pstmt.setInt(1, m_role_id);
-			pstmt.setInt(2, ad_User_Id);
-			rs = pstmt.executeQuery();
-			if(rs.next()){
-				isSDM = true;
-			}
-		}
-		catch (SQLException e){
-			log.log(Level.SEVERE, "Not found user role", e);
-		}
-		finally{
-			DB.close(rs, pstmt);
-			rs = null;
-			pstmt = null;
-		}
-		
-		int m_employee_id = user.get_ValueAsInt("HC_Employee_ID");
-		
-		if(m_employee_id <= 0){
-			throw new AdempiereException("Error: Your user isn't an employee ");
-		}
-		
-		if(isSDM == true){
-			//sdm
-			if(!permit.getPermitType().equals("ITMK")){
-				throw new AdempiereException("Error: Document type is not for SDM to confirm");
-			}
-		}else{
-			//satpam
-			if(permit.getPermitType().equals("ITMK")){
-				throw new AdempiereException("Error: Document type is not for satpam to confirm");
-			}
-		}
-		
-		double potonganUpah = 0.0;
-		potonganUpah = permit.CalculatePayDeduction();
-		permit.set_ValueOfColumn("NilaiPotonganUpah", new BigDecimal(potonganUpah));
-		permit.setStatus(p_StatusConfirm);
-		permit.saveEx();
-		
-		return "Success confirm";
-	}//doIt
+		return m_role_id;
+	}//getRoleId()
+	
 }//endClass
