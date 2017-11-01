@@ -82,7 +82,7 @@ public class PSD_ApprovalNonOrganikTravelProcessNow extends SvrProcess{
 		int m_user_id = Env.getAD_User_ID(getCtx());
 		int m_role_id = 0;
 		boolean isSDM = false;
-		String roleApproveTravel = "Approve Travel";//SDM
+		String roleApproveTravel = "Confirm SDM";//SDM
 		X_AD_User user = new X_AD_User(getCtx(), m_user_id, get_TrxName());
 		
 		String sql = "SELECT "+X_AD_Role.COLUMNNAME_AD_Role_ID+" FROM "+X_AD_Role.Table_Name+" WHERE "

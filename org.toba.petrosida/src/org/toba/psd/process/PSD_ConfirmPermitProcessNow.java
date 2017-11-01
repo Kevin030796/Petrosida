@@ -58,7 +58,7 @@ public class PSD_ConfirmPermitProcessNow extends SvrProcess{
 		X_AD_User user = new X_AD_User(getCtx(), ad_User_Id, get_TrxName());
 		int m_role_id = 0;
 		boolean isSDM = false;
-		String roleConfirmSDM = "Confirm Permit SDM";//SDM role
+		String roleConfirmSDM = "Confirm SDM";//SDM role
 		
 		String sql = "SELECT "+X_AD_Role.COLUMNNAME_AD_Role_ID+" FROM "+X_AD_Role.Table_Name+" WHERE "
 				+ X_AD_Role.COLUMNNAME_IsActive + "='Y' AND "

@@ -122,10 +122,9 @@ public class PSD_CalloutRequestOvertime extends CalloutEngine implements
 		
 		if(value == null)
 			return "";
+		Timestamp transaction = new Timestamp(System.currentTimeMillis());
 		
-		Timestamp transaction = (Timestamp)value;
-		
-		//mTab.setValue(X_HC_RequestOvertime.COLUMNNAME_DateTrx, timeToday);
+		mTab.setValue(X_HC_RequestOvertime.COLUMNNAME_DateTrx, transaction);
 		mTab.setValue(X_HC_RequestOvertime.COLUMNNAME_TimeTrx, transaction);
 		
 		return "";

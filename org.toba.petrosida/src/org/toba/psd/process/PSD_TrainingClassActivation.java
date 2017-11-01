@@ -102,6 +102,8 @@ public class PSD_TrainingClassActivation extends SvrProcess{
 				if(jobLevel.getValue().equals("Manager"))
 				{
 					Managers = addManager(Managers, m_trainingAttendance.getHC_Employee_ID());
+					createReportEmployee(m_trainingAttendance, employeeJob, trainingClass);
+					DocumentEmployee++;
 				}
 				else
 				{
@@ -136,6 +138,7 @@ public class PSD_TrainingClassActivation extends SvrProcess{
 		}
 		
 		trainingClass.set_ValueOfColumn("Status", "Act");
+		trainingClass.setProcessed(true);
 		trainingClass.saveEx();
 		
 		if(DocumentEmployee == 0 && DocumentManager == 0)
@@ -220,7 +223,7 @@ public class PSD_TrainingClassActivation extends SvrProcess{
 		X_HC_EffectivityReport_Mgr mgr_effectivityReport = 
 				new X_HC_EffectivityReport_Mgr(getCtx(), 0, get_TrxName());
 		mgr_effectivityReport.setHC_Employee_ID(HC_Employee_ID);
-		//mgr_effectivityReport.setHC_Job_ID(job.get_ID());
+		mgr_effectivityReport.setHC_Job_ID(job.get_ID());
 		mgr_effectivityReport.setHC_Org_ID(org.get_ID());
 		mgr_effectivityReport.setHC_NIK(employee.get_Value("HC_NIK").toString());
 		mgr_effectivityReport.setHC_TrainingClass_ID(trainingClass.get_ID());
